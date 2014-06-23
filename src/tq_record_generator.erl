@@ -35,6 +35,7 @@
       FunctionsAst :: erl_syntax:syntaxTree().
 build_model(Model) ->
     Builders = [
+                %% fun hooks_args_to_abstract/1,
                 fun build_main_record/1,
                 fun build_new/1,
                 fun build_getter_and_setters/1,
@@ -176,10 +177,8 @@ to_ext_proplist_function(Model) ->
       Model,
       fun to_ext_hook/2).
 
-to_ext_hook(#record_field{to_ext=undefined}, Ast) ->
-    Ast;
-to_ext_hook(#record_field{to_ext=Fun}, Ast) ->
-    function_call(Fun, [Ast]).
+to_ext_hook(#record_field{to_ext=Funs}, Ast) ->
+    apply_hooks(Funs, Ast).
 
 to_proplist_function_(FName, #record_model{fields=Fields}, ArgModifierFun) ->
     Fun_ = fun(AccessModeOpt) ->
@@ -278,12 +277,7 @@ from_ext_proplist_function(#record_model{fields=Fields}) ->
                    ?function(?atom_join(from_ext_proplist, Suffix),
                              [?clause(
                                  [?tuple([?abstract(atom_to_binary(F#record_field.name)), ?var('Bin')]), ?var('Model'), ?underscore], none,
-                                 [case F#record_field.from_ext of
-                                      none ->
-                                          SetterClause(F, ?var('Bin'));
-                                      Fun ->
-                                          Cases(F, function_call(Fun, [?var('Bin')]))
-                                  end])
+                                 [Cases(F, apply_hooks(F#record_field.from_ext, ?var('Bin')))])
                               || F <- Fields,
                                  F#record_field.setter =/= false,
                                  element(AccessModeOpt, F#record_field.mode)] ++ DefaultClasuse)
@@ -418,14 +412,13 @@ field_from_ext(#record_model{fields=Fields}) ->
             end,
     ?function(field_from_ext,
               [?clause([?atom(F#record_field.name), ?var('Bin')], none,
-                       [case F#record_field.from_ext of
-                            none -> Valid(F, ?var('Bin'));
-                            Fun -> ?cases(function_call(Fun, [?var('Bin')]),
-                                          [?clause([?ok(?var('Val'))], none,
-                                                   [Valid(F, ?var('Val'))]),
-                                           ?clause([?var('Err')], none,
-                                                   [?var('Err')])])
-                        end]) || F <- Fields]).
+                       [
+                        ?cases(apply_hooks(F#record_field.from_ext, ?var('Bin')),
+                               [?clause([?ok(?var('Val'))], none,
+                                        [Valid(F, ?var('Val'))]),
+                                ?clause([?var('Err')], none,
+                                        [?var('Err')])])
+                       ]) || F <- Fields]).
 
 field_to_ext(#record_model{fields=Fields}) ->
     ?function(field_to_ext,
@@ -653,3 +646,10 @@ function_call(Fun, Args) ->
 
 atom_to_binary(Atom) ->
     list_to_binary(atom_to_list(Atom)).
+
+apply_hooks([], Var) ->
+    Var;
+apply_hooks([Fun], Var) ->
+    function_call(Fun, [Var]);
+apply_hooks([Fun|Rest], Var) ->
+    apply_hooks(Rest, function_call(Fun, [Var])).

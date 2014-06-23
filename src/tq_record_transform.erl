@@ -16,7 +16,8 @@
 
 -export([parse_transform/2]).
 
--export([create_model/1,
+-export([
+         create_model/2,
          model_option/3,
          normalize_model/1,
          set_globals/2,
@@ -24,13 +25,15 @@
 
          create_field/1,
          field_option/3,
-         normalize_field/1,
+         normalize_field/2,
          set_field/2,
 
          meta_clauses/1
         ]).
 
 -export([g/3]).
+
+-define(CONVERTER_RULES_FILE, "converter.map").
 
 parse_transform(Ast, Options) ->
     try
@@ -50,12 +53,43 @@ g(field, Field, Model) ->
             {ok, PluginState}
     end.
 
-
 %% Model.
 
-create_model(Module) ->
-    #record_model{module=Module}.
+create_model(Module, Opts) ->
+    tq_transform_utils:error_map_funs(
+      [
+       fun(M) -> set_global_opts(M, Opts) end,
+       fun set_default_converter_rules/1
+      ],
+      #record_model{module=Module}).
 
+set_global_opts(Model, Opts) ->
+    tq_transform_utils:error_writer_foldl(
+      fun set_global_opt/2,
+      Model,
+      [Opts]).
+
+set_global_opt({tq_converter_rules, ConverterRulesFile}, Model) ->
+    {ok, Model#record_model{converter_rules=ConverterRulesFile}};
+set_global_opt(_, Model) ->
+    {ok, Model}.
+
+set_default_converter_rules(#record_model{converter_rules=undefined}=Model) ->
+    case code:priv_dir(tq_transform) of
+        {error, badname} = Err ->
+            Err;
+        PrivDir ->
+            Path = filename:join(PrivDir, ?CONVERTER_RULES_FILE),
+            set_default_converter_rules(Model#record_model{converter_rules=Path})
+    end;
+set_default_converter_rules(#record_model{converter_rules=Path}=Model) ->
+    case file:consult(Path) of
+        {ok, Data} ->
+            Model2 = Model#record_model{converter_rules=Data},
+            {ok, Model2};
+        {error, _Reason} = Err ->
+            Err
+    end.
 
 model_option(validators, NewValidators, #record_model{validators=Validators}=Model) ->
     Model2 = Model#record_model{validators = Validators ++ NewValidators},
@@ -94,10 +128,20 @@ field_option(type, Type, Field) ->
     Field2 = Field#record_field{type = Type},
     {ok, Field2};
 field_option(from_ext, FromExtFun, Field) ->
-    Field2 = Field#record_field{from_ext = FromExtFun},
+    FromExtFun2 =
+        case is_list(FromExtFun) of
+            true -> FromExtFun;
+            false -> [FromExtFun]
+        end,
+    Field2 = Field#record_field{from_ext = FromExtFun2},
     {ok, Field2};
 field_option(to_ext, ToExtFun, Field) ->
-    Field2 = Field#record_field{to_ext = ToExtFun},
+    ToExtFun2 =
+        case is_list(ToExtFun) of
+            true -> ToExtFun;
+            false -> [ToExtFun]
+        end,
+    Field2 = Field#record_field{to_ext = ToExtFun2},
     {ok, Field2};
 field_option(get, Getter, Field) ->
     Field2 = Field#record_field{getter = Getter},
@@ -114,13 +158,12 @@ field_option(validators, NewValidators, #record_field{validators=Validators}=Fie
 field_option(_Option, _Val, _Field) ->
     false.
 
-normalize_field(Field) ->
+normalize_field(Field, #record_model{converter_rules=ConverterRules}) ->
     Rules = [
              fun access_mode_getter_rule/1,
              fun access_mode_setter_rule/1,
              fun get_set_record_rule/1,
-             fun from_ext_rule/1,
-             fun default_validators_rule/1
+             fun(F) -> set_convert_rules(F, ConverterRules) end
             ],
     tq_transform_utils:error_writer_foldl(fun(R, F) -> R(F) end, Field, Rules).
 
@@ -134,43 +177,47 @@ meta_clauses(Model) ->
 
 %% Rules.
 
+set_convert_rules(#record_field{
+                     type=Type,
+                     from_ext=FromHooks,
+                     to_ext=ToHooks,
+                     validators=ValidatorHooks
+                    }=F,
+                  ConverterRules) ->
+    case lists:keyfind(Type, 1, ConverterRules) of
+        {_, From, To, Validators} ->
+            F2 =
+                F#record_field{
+                  from_ext =
+                      case From of
+                          none -> FromHooks;
+                          _ -> [From|FromHooks]
+                      end,
+                  to_ext =
+                      case To of
+                          none -> ToHooks;
+                          _ -> ToHooks ++ [To]
+                      end,
+                  validators = Validators ++ ValidatorHooks
+                 },
+            {ok, F2};
+        false ->
+            {ok, F}
+    end.
+
 get_set_record_rule(Field=#record_field{stores_in_record=false, getter=Getter, setter=Setter}) ->
     case {Getter, Setter} of
         {true, true} ->
-            {error, "Storing in record required for default getter and setter"};
+            {error, "Storing in record required for default getter and setter; "};
         {true, _} ->
-            {error, "Storing in record required for default getter"};
+            {error, "Storing in record required for default getter; "};
         {_, true} ->
-            {error, "Storing in record required for default setter"};
+            {error, "Storing in record required for default setter; "};
         {_, _} ->
             {ok, Field}
     end;
 get_set_record_rule(Field) ->
     {ok, Field#record_field{stores_in_record=true}}.
-
-from_ext_rule(#record_field{from_ext=undefined, type=Type}=Field) ->
-    case from_ext(Type) of
-        {ok, FromExtFun} ->
-            Field2 = Field#record_field{from_ext=FromExtFun},
-            {ok, Field2};
-        {error, undefined} ->
-            Reason = lists:flatten(io_lib:format("from_ext required for type: ~p", [Type])),
-            {error, Reason}
-    end;
-from_ext_rule(Field) ->
-    {ok, Field}.
-
-default_validators_rule(#record_field{type=Type, validators=Validators}=Field)
-  when Type =:= non_neg_integer orelse Type =:= non_neg_float ->
-    NonNegValidator = {tq_transform_utils, more_or_eq, [0]},
-    Field2 = Field#record_field{validators=[NonNegValidator|Validators]},
-    {ok, Field2};
-default_validators_rule(#record_field{type=non_empty_binary, validators=Validators}=Field) ->
-    NonNegValidator = {tq_transform_utils, non_empty_binary},
-    Field2 = Field#record_field{validators=[NonNegValidator|Validators]},
-    {ok, Field2};
-default_validators_rule(Field) ->
-    {ok, Field}.
 
 access_mode_getter_rule(Field=#record_field{mode=#access_mode{sr=false}}) ->
     {ok, Field#record_field{getter=false}};
@@ -183,18 +230,6 @@ access_mode_setter_rule(Field) ->
     {ok, Field}.
 
 %% Internal helpers.
-
-from_ext(binary) -> {ok, none};
-from_ext(non_empty_binary) -> {ok, none};
-from_ext(non_neg_integer) -> {ok, {tq_transform_utils, to_integer}};
-from_ext(non_neg_float) -> {ok, {tq_transform_utils, to_float}};
-from_ext(integer) -> {ok, {tq_transform_utils, to_integer}};
-from_ext(float) -> {ok, {tq_transform_utils, to_float}};
-from_ext(boolean) -> {ok, {tq_transform_utils, to_boolean}};
-from_ext(date) -> {ok, {tq_transform_utils, to_date}};
-from_ext(time) -> {ok, {tq_transform_utils, to_time}};
-from_ext(datetime) -> {ok, {tq_transform_utils, to_datetime}};
-from_ext(_) -> {error, undefined}.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -210,11 +245,11 @@ get_set_record_rule_test_() ->
     %% Test case when stores_in_record manually set to false.
     Tests2 = [{C({false, G, S}), case {Default(G), Default(S)} of
                                      {true, true} ->
-                                         {error, "Storing in record required for default getter and setter"};
+                                         {error, "Storing in record required for default getter and setter; "};
                                      {true, _} ->
-                                         {error, "Storing in record required for default getter"};
+                                         {error, "Storing in record required for default getter; "};
                                      {_, true} ->
-                                         {error, "Storing in record required for default setter"};
+                                         {error, "Storing in record required for default setter; "};
                                      {G1, S1} ->
                                          {ok, C({false, G1, S1})}
                                  end} || G <- Values, S <- Values],
