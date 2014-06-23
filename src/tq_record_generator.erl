@@ -277,7 +277,12 @@ from_ext_proplist_function(#record_model{fields=Fields}) ->
                    ?function(?atom_join(from_ext_proplist, Suffix),
                              [?clause(
                                  [?tuple([?abstract(atom_to_binary(F#record_field.name)), ?var('Bin')]), ?var('Model'), ?underscore], none,
-                                 [Cases(F, apply_hooks(F#record_field.from_ext, ?var('Bin')))])
+                                 [case F#record_field.from_ext of
+                                      [] ->
+                                          SetterClause(F, ?var('Bin'));
+                                      FromHooks ->
+                                          Cases(F, apply_hooks(FromHooks, ?var('Bin')))
+                                  end])
                               || F <- Fields,
                                  F#record_field.setter =/= false,
                                  element(AccessModeOpt, F#record_field.mode)] ++ DefaultClasuse)
@@ -413,11 +418,16 @@ field_from_ext(#record_model{fields=Fields}) ->
     ?function(field_from_ext,
               [?clause([?atom(F#record_field.name), ?var('Bin')], none,
                        [
-                        ?cases(apply_hooks(F#record_field.from_ext, ?var('Bin')),
-                               [?clause([?ok(?var('Val'))], none,
-                                        [Valid(F, ?var('Val'))]),
-                                ?clause([?var('Err')], none,
-                                        [?var('Err')])])
+                        case F#record_field.from_ext of
+                            [] ->
+                                Valid(F, ?var('Bin'));
+                            FromHooks ->
+                                ?cases(apply_hooks(FromHooks, ?var('Bin')),
+                                       [?clause([?ok(?var('Val'))], none,
+                                                [Valid(F, ?var('Val'))]),
+                                        ?clause([?var('Err')], none,
+                                                [?var('Err')])])
+                        end
                        ]) || F <- Fields]).
 
 field_to_ext(#record_model{fields=Fields}) ->

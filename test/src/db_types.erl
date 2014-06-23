@@ -13,6 +13,7 @@
 ?FIELD(date_field, date).
 ?FIELD(time_field, time).
 ?FIELD(datetime_field, datetime).
+?FIELD(unknown_field, unknown).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -67,7 +68,9 @@ converter_test_() ->
          {datetime_field, <<"2014-12-15T24:00:00Z">>, {error, [{datetime_field, invalid_time}]}},
          {datetime_field, <<"01-13-01 0:0:0">>, {error, [{datetime_field, wrong_format}]}},
          {datetime_field, <<"2014/12/01 0:0:0">>, {error, [{datetime_field, wrong_format}]}},
-         {datetime_field, <<"2014-12-1  0:0:0">>, {error, [{datetime_field, wrong_format}]}}
+         {datetime_field, <<"2014-12-1  0:0:0">>, {error, [{datetime_field, wrong_format}]}},
+
+         {unknown_field, atom, {ok, atom}}
         ],
     [fun() ->
              Result =
