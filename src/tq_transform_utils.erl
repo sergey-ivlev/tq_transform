@@ -285,7 +285,7 @@ to_datetime(_) ->
     {error, wrong_format}.
 
 bin_to_datetime(Bin) ->
-    Re = "(?<y>\\d{4})-(?<m>\\d{1,2})-(?<d>\\d{1,2})[Tt](?<hh>\\d{1,2}):(?<mm>\\d{1,2}):(?<ss>\\d{1,2})(?<ms>\.\\d{1,}){0,1}(?<offset>[Zz]|[+-]\\d{2}:\\d{2})",
+    Re = "(?<y>\\d{4})-(?<m>\\d{1,2})-(?<d>\\d{1,2})[Tt](?<hh>\\d{1,2}):(?<mm>\\d{1,2}):(?<ss>\\d{1,2})(?<ms>\.\\d{1,}){0,1}(?<offset>[Zz]|[+-]\\d{2}:\\d{2}|[+-]\\d{4})",
     bin_to_datetime(Re, Bin).
 bin_to_datetime(Re, Bin) ->
     case re:run(Bin, Re, [{capture, [y, m, d, hh, mm, ss, ms, offset], binary}]) of
@@ -296,6 +296,12 @@ bin_to_datetime(Re, Bin) ->
                            <<>> ->
                                0;
                            <<Sign, OffsetH:2/binary, ":", OffsetM:2/binary>> ->
+                               SecOffset = binary_to_integer(OffsetH)*60*60+binary_to_integer(OffsetM)*60,
+                               case Sign of
+                                   $+ -> -SecOffset;
+                                   $- -> SecOffset
+                               end;
+                           <<Sign, OffsetH:2/binary, OffsetM:2/binary>> ->
                                SecOffset = binary_to_integer(OffsetH)*60*60+binary_to_integer(OffsetM)*60,
                                case Sign of
                                    $+ -> -SecOffset;
